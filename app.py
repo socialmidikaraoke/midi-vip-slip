@@ -139,7 +139,7 @@ with st.form("slip_form"):
     amount = st.number_input("3. ยอดโอน (ต้องเต็มร้อย ห้ามมีเศษ)", min_value=100, step=100)
     
     # ช่องเวลาจะเปลี่ยน auto ถ้า AI อ่านเจอ
-    trans_time = st.time_input("4. เวลาที่โอน (อ่านจากสลิปอัตโนมัติ)", value=default_time, step=60)
+    trans_time_str = st.text_input("4. เวลาที่โอน (เช่น 14.30)", value=default_time.strftime('%H:%M'))
     
     submitted = st.form_submit_button("✅ ยืนยันการแจ้งโอน")
 
@@ -184,4 +184,5 @@ with st.form("slip_form"):
                         st.error(f"เกิดข้อผิดพลาดในการค้นหา: {e}")
             except Exception as e:
                 st.error(f"ระบบขัดข้อง: {e}")
+
 
