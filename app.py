@@ -163,7 +163,7 @@ with st.form("slip_form"):
                         log_ws.append_row(["Timestamp", "ผู้โอน", "ยอดเงิน", "เวลาโอน", "สถานะ"])
                     
                     months_got = int(amount / 100)
-                    member_ws = sheet.worksheet("Sheet1")
+                    member_ws = sheet.worksheet("Members")
                     
                     try:
                         cell = member_ws.find(sender_name, in_column=7)
@@ -184,5 +184,6 @@ with st.form("slip_form"):
                         st.error(f"เกิดข้อผิดพลาดในการค้นหา: {e}")
             except Exception as e:
                 st.error(f"ระบบขัดข้อง: {e}")
+
 
 
