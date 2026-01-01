@@ -108,14 +108,15 @@ with st.form("slip_form"):
     detected_time = None
     
     if uploaded_file:
-        with st.spinner("⏳ AI กำลังสแกนเวลาจากสลิป..."):
+        # เปลี่ยนข้อความ Spinner เป็นแบบทั่วไป ไม่บอกว่าทำอะไร
+        with st.spinner("⏳ กำลังตรวจสอบเอกสาร..."):
             t = extract_time_from_image(uploaded_file)
             uploaded_file.seek(0)
             if t:
                 detected_time = t
-                st.success(f"✅ อ่านเวลาจากสลิปได้: **{t.strftime('%H:%M')}** น.")
+                # *** ลบส่วน st.success ที่โชว์เวลาทิ้งไป ***
+                # ระบบจะรู้เวลาอยู่ข้างใน แต่ไม่บอกผู้ใช้
             else:
-                # --- แก้ไขข้อความตรงนี้ตามที่ขอ ---
                 st.error("❌ สลิปของคุณไม่ชัดเจน กรุณาส่งสลิปให้แอดมินโดยตรงผ่านช่องทางแชท facebook สังคม คนรักมิดี้ คาราโอเกะ www.facebook.com/sociallovemidi")
     
     sender_name = st.text_input("2. ชื่อบัญชีสมาชิก หรือ รหัสสมาชิก", placeholder="เช่น ป๋า หรือ MBR-123")
@@ -126,7 +127,6 @@ with st.form("slip_form"):
     if submit_btn:
         if not uploaded_file: st.error("❌ กรุณาอัปโหลดสลิป")
         elif detected_time is None: 
-            # แจ้งเตือนซ้ำอีกครั้งตรงปุ่มกด
             st.error("❌ ไม่สามารถทำรายการได้ เนื่องจากสลิปไม่ชัดเจน กรุณาติดต่อแอดมินผ่าน Facebook ตามลิงก์ด้านบน")
         elif not sender_name: st.error("❌ ลืมใส่ชื่อ")
         elif amount % 100 != 0: st.error("❌ ยอดเงินต้องเต็มร้อย")
@@ -168,8 +168,9 @@ with st.form("slip_form"):
                                 except: continue
                     
                     if is_duplicate:
-                        st.error(f"⛔ สลิปนี้ (เวลา {detected_time.strftime('%H:%M')}) เคยแจ้งไปแล้ว!")
-                        st.warning(f"ระบบไม่อนุญาตให้ใช้สลิปเดิมแจ้งซ้ำ")
+                        # *** เปลี่ยนข้อความแจ้งเตือน เป็นแบบกว้างๆ ไม่บอกเวลา ***
+                        st.error(f"⛔ ไม่สามารถทำรายการได้ เนื่องจากพบข้อมูลการแจ้งโอนซ้ำ")
+                        st.warning(f"กรุณาตรวจสอบว่าท่านได้ทำรายการไปแล้วหรือไม่ หรือติดต่อแอดมินหากมีข้อผิดพลาด")
                     else:
                         # 2. ค้นหาและอัปเดต
                         member_ws = sheet.worksheet(MEMBER_TAB_NAME)
