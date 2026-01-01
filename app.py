@@ -11,7 +11,7 @@ import re
 # ================= Config =================
 st.set_page_config(page_title="แจ้งโอนเงิน - มิดี้ VIP", page_icon="🎵")
 
-# --- ID ชีตของคุณ (คงเดิม) ---
+# --- ID ชีตของคุณ ---
 SHEET_ID = '1hQRW8mJVD6yMp5v2Iv1i3hCLTR3fosWyKyTk_Ibj3YQ'
 MEMBER_TAB_NAME = 'Members'
 LOG_TAB_NAME = 'Transaction_Logs'
@@ -52,7 +52,6 @@ def calculate_next_permission(current_perm, amount):
     if months_to_add == 0: return current_perm
     covered_months = set()
     
-    # แกะสิทธิ์เดิม
     if str(current_perm).strip() not in ["-", "", "nan", "None"]:
         for part in str(current_perm).split(','):
             try:
@@ -67,7 +66,6 @@ def calculate_next_permission(current_perm, amount):
                         covered_months.add((y, int(r)))
             except: continue
 
-    # หาเดือนล่าสุด
     if not covered_months:
         now = datetime.now()
         cur_y, cur_m = now.year + 543, now.month - 1
@@ -75,13 +73,11 @@ def calculate_next_permission(current_perm, amount):
     else:
         cur_y, cur_m = max(covered_months)
 
-    # บวกเดือนเพิ่ม
     for _ in range(months_to_add):
         cur_m += 1
         if cur_m > 12: cur_m = 1; cur_y += 1
         covered_months.add((cur_y, cur_m))
 
-    # จัดรูปแบบกลับ
     data_by_year = {}
     for y, m in sorted(list(covered_months)):
         if y not in data_by_year: data_by_year[y] = []
@@ -132,55 +128,71 @@ with st.form("slip_form"):
                 if client:
                     sheet = client.open_by_key(SHEET_ID)
                     
-                    # 1. เขียน Log
-                    try:
-                        log_ws = sheet.worksheet(LOG_TAB_NAME)
-                        log_ws.append_row([str(datetime.now()), sender_name, amount, str(trans_time), "Processing..."])
-                    except: pass # ข้ามถ้า log มีปัญหา
-
-                    # ==========================================
-                    # 2. ค้นหาสมาชิก (Logic ใหม่ที่อัปเกรดแล้ว)
-                    # ==========================================
-                    member_ws = sheet.worksheet(MEMBER_TAB_NAME)
+                    # 1. เช็กประวัติซ้ำ (Duplicate Check)
+                    log_ws = sheet.worksheet(LOG_TAB_NAME)
+                    logs = log_ws.get_all_values()
                     
-                    # ดึงข้อมูลทั้งหมดมาเช็คทีละแถว (เพื่อรองรับ , และ Col A)
-                    all_values = member_ws.get_all_values()
+                    is_duplicate = False
+                    # วนลูปเช็คประวัติ (เริ่มแถว 2)
+                    for row in logs[1:]:
+                        # Log Structure: [Timestamp, Name, Amount, Time, Status]
+                        # Index: 0, 1, 2, 3, 4
+                        if len(row) >= 4:
+                            prev_name = str(row[1]).strip()
+                            prev_amount = str(row[2]).strip()
+                            prev_time = str(row[3]).strip()
+                            
+                            # เงื่อนไขซ้ำ: ชื่อตรง + ยอดตรง + เวลาตรง (เป๊ะๆ)
+                            # (แปลงเวลาเป็น string เพื่อเทียบ)
+                            current_time_str = str(trans_time)[:5] # เอาแค่ HH:MM
+                            prev_time_str = prev_time[:5]
+                            
+                            if (prev_name == sender_name.strip() and 
+                                prev_amount == str(amount) and 
+                                prev_time_str == current_time_str):
+                                is_duplicate = True
+                                break
                     
-                    found_row_index = None
-                    current_perm_val = ""
-                    search_key = sender_name.strip()
-                    
-                    # เริ่มวนลูปหา (เริ่ม i=1 เพื่อข้ามหัวตาราง)
-                    for i, row in enumerate(all_values):
-                        if i == 0: continue 
-                        
-                        # Col A (index 0) = MemberID
-                        # Col G (index 6) = ชื่อสมาชิก (อาจมีคอมม่า)
-                        col_a_id = str(row[0]).strip() if len(row) > 0 else ""
-                        col_g_name = str(row[6]).strip() if len(row) > 6 else ""
-                        
-                        # แยกชื่อใน Col G ด้วยคอมม่า (เช่น "MBR-123,ป๋า" -> ["MBR-123", "ป๋า"])
-                        valid_names = [n.strip() for n in col_g_name.split(',')]
-                        
-                        # เช็คว่าสิ่งที่ user พิมพ์ ตรงกับ Col A หรือ ชื่อใดชื่อหนึ่งใน Col G ไหม?
-                        if search_key == col_a_id or search_key in valid_names:
-                            found_row_index = i + 1 # +1 เพราะใน sheet เริ่มนับที่ 1
-                            current_perm_val = str(row[4]) if len(row) > 4 else "" # Col E = index 4
-                            break
-                    
-                    # 3. ผลลัพธ์
-                    if found_row_index:
-                        new_perm = calculate_next_permission(current_perm_val, amount)
-                        
-                        # อัปเดต Column E (5)
-                        member_ws.update_cell(found_row_index, 5, new_perm)
-                        
-                        st.balloons()
-                        st.success(f"🎉 เรียบร้อย! อัปเดตสิทธิ์ให้คุณ '{sender_name}' แล้ว")
-                        st.code(f"สิทธิ์ใหม่: {new_perm}")
+                    if is_duplicate:
+                        st.error(f"⛔ รายการนี้เคยแจ้งไปแล้วครับ!")
+                        st.warning(f"ระบบพบข้อมูล: {sender_name} ยอด {amount} เวลา {trans_time} ในประวัติ")
                     else:
-                        st.warning(f"⚠️ ไม่พบข้อมูล '{sender_name}' ในระบบ")
-                        st.write("ลองตรวจสอบตัวสะกด หรือใช้รหัสสมาชิก (Member ID) แทน")
+                        # ถ้าไม่ซ้ำ -> ทำงานต่อ
+                        
+                        # 2. ค้นหาสมาชิก
+                        member_ws = sheet.worksheet(MEMBER_TAB_NAME)
+                        all_values = member_ws.get_all_values()
+                        
+                        found_row_index = None
+                        current_perm_val = ""
+                        search_key = sender_name.strip()
+                        
+                        for i, row in enumerate(all_values):
+                            if i == 0: continue 
+                            col_a_id = str(row[0]).strip() if len(row) > 0 else ""
+                            col_g_name = str(row[6]).strip() if len(row) > 6 else ""
+                            valid_names = [n.strip() for n in col_g_name.split(',')]
+                            
+                            if search_key == col_a_id or search_key in valid_names:
+                                found_row_index = i + 1
+                                current_perm_val = str(row[4]) if len(row) > 4 else ""
+                                break
+                        
+                        if found_row_index:
+                            # 3. อัปเดตสิทธิ์
+                            new_perm = calculate_next_permission(current_perm_val, amount)
+                            member_ws.update_cell(found_row_index, 5, new_perm)
+                            
+                            # 4. บันทึก Log ใหม่
+                            log_ws.append_row([str(datetime.now()), sender_name, amount, str(trans_time), "Success"])
+                            
+                            st.balloons()
+                            st.success(f"🎉 เรียบร้อย! อัปเดตสิทธิ์ให้คุณ '{sender_name}' แล้ว")
+                            st.code(f"สิทธิ์ใหม่: {new_perm}")
+                        else:
+                            st.warning(f"⚠️ ไม่พบชื่อ/รหัส '{sender_name}' ในระบบ (แต่บันทึกประวัติให้แล้ว)")
+                            # บันทึก Log กรณีไม่เจอชื่อ (เพื่อเป็นหลักฐาน)
+                            log_ws.append_row([str(datetime.now()), sender_name, amount, str(trans_time), "Name Not Found"])
 
             except Exception as e:
                 st.error(f"❌ ระบบขัดข้อง: {e}")
