@@ -2,5 +2,5 @@ streamlit
 gspread
 google-auth
 pandas
-opencv-python-headless
 easyocr
+opencv-python-headless
