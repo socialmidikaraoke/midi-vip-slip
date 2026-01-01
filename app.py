@@ -2,7 +2,7 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import easyocr
 import numpy as np
 import cv2
@@ -11,10 +11,10 @@ import re
 # ================= Config =================
 st.set_page_config(page_title="แจ้งโอนเงิน - มิดี้ VIP", page_icon="🎵")
 
-# --- ID ชีตของคุณ ---
 SHEET_ID = '1hQRW8mJVD6yMp5v2Iv1i3hCLTR3fosWyKyTk_Ibj3YQ'
 MEMBER_TAB_NAME = 'Members'
 LOG_TAB_NAME = 'Transaction_Logs'
+DUPLICATE_BUFFER_MINUTES = 30 
 
 # ================= โหลด AI และเชื่อมต่อ =================
 @st.cache_resource
@@ -103,23 +103,31 @@ st.title("🎵 ระบบแจ้งโอนเงิน - มิดี้ V
 st.info("กรุณาโอนเงินเข้าบัญชี: **ออมสิน 020300995519** เท่านั้น")
 
 with st.form("slip_form"):
-    uploaded_file = st.file_uploader("1. อัปโหลดรูปสลิป", type=['png', 'jpg', 'jpeg'])
+    uploaded_file = st.file_uploader("1. อัปโหลดรูปสลิป (ต้องชัดเห็นเวลา)", type=['png', 'jpg', 'jpeg'])
     
-    default_time = datetime.now().time()
+    detected_time = None
+    
     if uploaded_file:
-        with st.spinner("⏳ กำลังอ่านเวลา..."):
+        with st.spinner("⏳ AI กำลังสแกนเวลาจากสลิป..."):
             t = extract_time_from_image(uploaded_file)
             uploaded_file.seek(0)
             if t:
-                default_time = t
-                st.success(f"🤖 อ่านเวลาได้: {t.strftime('%H:%M')}")
+                detected_time = t
+                st.success(f"✅ อ่านเวลาจากสลิปได้: **{t.strftime('%H:%M')}** น.")
+            else:
+                # --- แก้ไขข้อความตรงนี้ตามที่ขอ ---
+                st.error("❌ สลิปของคุณไม่ชัดเจน กรุณาส่งสลิปให้แอดมินโดยตรงผ่านช่องทางแชท facebook สังคม คนรักมิดี้ คาราโอเกะ www.facebook.com/sociallovemidi")
     
     sender_name = st.text_input("2. ชื่อบัญชีสมาชิก หรือ รหัสสมาชิก", placeholder="เช่น ป๋า หรือ MBR-123")
     amount = st.number_input("3. ยอดโอน (เต็มร้อย)", min_value=100, step=100)
-    trans_time = st.time_input("4. เวลาโอน", value=default_time, step=60)
     
-    if st.form_submit_button("✅ ยืนยันการแจ้งโอน"):
-        if not uploaded_file: st.error("❌ ลืมแนบสลิป")
+    submit_btn = st.form_submit_button("✅ ยืนยันการแจ้งโอน")
+
+    if submit_btn:
+        if not uploaded_file: st.error("❌ กรุณาอัปโหลดสลิป")
+        elif detected_time is None: 
+            # แจ้งเตือนซ้ำอีกครั้งตรงปุ่มกด
+            st.error("❌ ไม่สามารถทำรายการได้ เนื่องจากสลิปไม่ชัดเจน กรุณาติดต่อแอดมินผ่าน Facebook ตามลิงก์ด้านบน")
         elif not sender_name: st.error("❌ ลืมใส่ชื่อ")
         elif amount % 100 != 0: st.error("❌ ยอดเงินต้องเต็มร้อย")
         else:
@@ -128,38 +136,42 @@ with st.form("slip_form"):
                 if client:
                     sheet = client.open_by_key(SHEET_ID)
                     
-                    # 1. เช็กประวัติซ้ำ (Duplicate Check)
+                    # 1. เช็กประวัติซ้ำ
                     log_ws = sheet.worksheet(LOG_TAB_NAME)
                     logs = log_ws.get_all_values()
                     
                     is_duplicate = False
-                    # วนลูปเช็คประวัติ (เริ่มแถว 2)
-                    for row in logs[1:]:
-                        # Log Structure: [Timestamp, Name, Amount, Time, Status]
-                        # Index: 0, 1, 2, 3, 4
+                    dummy_date = datetime.now().date()
+                    current_dt = datetime.combine(dummy_date, detected_time)
+                    
+                    recent_logs = logs[1:][-50:] 
+                    
+                    for row in recent_logs:
                         if len(row) >= 4:
                             prev_name = str(row[1]).strip()
                             prev_amount = str(row[2]).strip()
-                            prev_time = str(row[3]).strip()
+                            prev_time_str = str(row[3]).strip()
                             
-                            # เงื่อนไขซ้ำ: ชื่อตรง + ยอดตรง + เวลาตรง (เป๊ะๆ)
-                            # (แปลงเวลาเป็น string เพื่อเทียบ)
-                            current_time_str = str(trans_time)[:5] # เอาแค่ HH:MM
-                            prev_time_str = prev_time[:5]
-                            
-                            if (prev_name == sender_name.strip() and 
-                                prev_amount == str(amount) and 
-                                prev_time_str == current_time_str):
-                                is_duplicate = True
-                                break
+                            if prev_name == sender_name.strip() and prev_amount == str(amount):
+                                try:
+                                    if len(prev_time_str) > 5:
+                                        prev_t = datetime.strptime(prev_time_str, "%H:%M:%S").time()
+                                    else:
+                                        prev_t = datetime.strptime(prev_time_str, "%H:%M").time()
+                                    
+                                    prev_dt = datetime.combine(dummy_date, prev_t)
+                                    diff = abs((current_dt - prev_dt).total_seconds() / 60)
+                                    
+                                    if diff < DUPLICATE_BUFFER_MINUTES:
+                                        is_duplicate = True
+                                        break
+                                except: continue
                     
                     if is_duplicate:
-                        st.error(f"⛔ รายการนี้เคยแจ้งไปแล้วครับ!")
-                        st.warning(f"ระบบพบข้อมูล: {sender_name} ยอด {amount} เวลา {trans_time} ในประวัติ")
+                        st.error(f"⛔ สลิปนี้ (เวลา {detected_time.strftime('%H:%M')}) เคยแจ้งไปแล้ว!")
+                        st.warning(f"ระบบไม่อนุญาตให้ใช้สลิปเดิมแจ้งซ้ำ")
                     else:
-                        # ถ้าไม่ซ้ำ -> ทำงานต่อ
-                        
-                        # 2. ค้นหาสมาชิก
+                        # 2. ค้นหาและอัปเดต
                         member_ws = sheet.worksheet(MEMBER_TAB_NAME)
                         all_values = member_ws.get_all_values()
                         
@@ -179,20 +191,16 @@ with st.form("slip_form"):
                                 break
                         
                         if found_row_index:
-                            # 3. อัปเดตสิทธิ์
                             new_perm = calculate_next_permission(current_perm_val, amount)
                             member_ws.update_cell(found_row_index, 5, new_perm)
-                            
-                            # 4. บันทึก Log ใหม่
-                            log_ws.append_row([str(datetime.now()), sender_name, amount, str(trans_time), "Success"])
+                            log_ws.append_row([str(datetime.now()), sender_name, amount, str(detected_time), "Success (Auto-OCR)"])
                             
                             st.balloons()
                             st.success(f"🎉 เรียบร้อย! อัปเดตสิทธิ์ให้คุณ '{sender_name}' แล้ว")
                             st.code(f"สิทธิ์ใหม่: {new_perm}")
                         else:
-                            st.warning(f"⚠️ ไม่พบชื่อ/รหัส '{sender_name}' ในระบบ (แต่บันทึกประวัติให้แล้ว)")
-                            # บันทึก Log กรณีไม่เจอชื่อ (เพื่อเป็นหลักฐาน)
-                            log_ws.append_row([str(datetime.now()), sender_name, amount, str(trans_time), "Name Not Found"])
+                            st.warning(f"⚠️ ไม่พบชื่อ/รหัส '{sender_name}' ในระบบ")
+                            log_ws.append_row([str(datetime.now()), sender_name, amount, str(detected_time), "Name Not Found"])
 
             except Exception as e:
                 st.error(f"❌ ระบบขัดข้อง: {e}")
