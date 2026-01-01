@@ -2,25 +2,57 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, time
+import easyocr
+import numpy as np
+import cv2
+import re
 
 # ================= Config =================
-# ตั้งค่าหน้าเว็บ
 st.set_page_config(page_title="แจ้งโอนเงิน - มิดี้ VIP", page_icon="🎵")
 
-# URL ของ Google Sheet (เอาเฉพาะ ID หรือ URL เต็มก็ได้ แต่ระบบนี้ใช้ชื่อ Sheet)
+# URL ของ Google Sheet
 SHEET_ID = st.secrets["sheet_id"] 
 
-# ================= ฟังก์ชันเชื่อมต่อ Google Sheets =================
+# ================= โหลด AI อ่านภาพ (Cache ไว้จะได้ไม่โหลดใหม่ทุกครั้ง) =================
+@st.cache_resource
+def load_ocr_reader():
+    return easyocr.Reader(['en'], gpu=False) # อ่านตัวเลขใช้แค่ en ก็พอ เร็วกว่า
+
+# ฟังก์ชันดึงเวลาจากภาพ
+def extract_time_from_image(image_bytes):
+    try:
+        reader = load_ocr_reader()
+        # แปลงภาพ
+        file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
+        image = cv2.imdecode(file_bytes, 1)
+        
+        # อ่านข้อความ
+        result = reader.readtext(image, detail=0)
+        full_text = " ".join(result)
+        
+        # ค้นหาแพทเทิร์นเวลา (เช่น 12:30, 12.30)
+        # Regex: หาตัวเลข 1-2 หลัก ตามด้วย : หรือ . และตามด้วยตัวเลข 2 หลัก
+        match = re.search(r'(\d{1,2})[:.](\d{2})', full_text)
+        
+        if match:
+            h, m = match.groups()
+            h, m = int(h), int(m)
+            if 0 <= h < 24 and 0 <= m < 60:
+                return time(h, m)
+    except Exception as e:
+        pass # ถ้าอ่านไม่ได้ ให้คืนค่า None
+    return None
+
+# ================= เชื่อมต่อ Google Sheets =================
 def get_google_sheet_client():
-    # ดึงค่า Key จาก Secrets ของ Streamlit Cloud (ปลอดภัยกว่าใส่ในโค้ด)
     creds_dict = dict(st.secrets["gcp_service_account"])
     scope = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
     creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     client = gspread.authorize(creds)
     return client
 
-# ================= ฟังก์ชันคำนวณสิทธิ์ (Logic เดิม) =================
+# ================= คำนวณสิทธิ์ =================
 def calculate_next_permission(current_perm, amount):
     months_to_add = int(amount / 100)
     if months_to_add == 0: return current_perm
@@ -80,15 +112,34 @@ def calculate_next_permission(current_perm, amount):
 
     return " , ".join(final_parts)
 
-# ================= หน้าเว็บ (UI) =================
+# ================= UI หน้าเว็บ =================
 st.title("🎵 ระบบแจ้งโอนเงิน - สังคมคนรักมิดี้ VIP")
 st.info("กรุณาโอนเงินเข้าบัญชี: **ออมสิน 020300995519** เท่านั้น")
 
 with st.form("slip_form"):
     uploaded_file = st.file_uploader("1. อัปโหลดรูปสลิป", type=['png', 'jpg', 'jpeg'])
+    
+    # ตัวแปรเก็บค่าเวลาเริ่มต้น
+    default_time = datetime.now().time()
+    
+    # --- ส่วน Logic อ่านเวลาอัตโนมัติ ---
+    if uploaded_file is not None:
+        with st.spinner("กำลังอ่านเวลาจากสลิป..."):
+            # ต้อง reset pointer ของไฟล์เพื่อให้ OCR อ่านได้ แล้วค่อยให้ uploader อ่านต่อ
+            extracted_time = extract_time_from_image(uploaded_file)
+            uploaded_file.seek(0) # reset file pointer
+            
+            if extracted_time:
+                default_time = extracted_time
+                st.success(f"🤖 อ่านเวลาเจอแล้ว: {default_time.strftime('%H:%M')} (ตรวจสอบอีกครั้ง)")
+            else:
+                st.warning("🤖 อ่านเวลาไม่เจอ กรุณาระบุเอง")
+    
     sender_name = st.text_input("2. ชื่อบัญชีสมาชิกของคุณ (ต้องตรงกับในระบบ)", placeholder="พิมพ์ชื่อให้ถูกต้อง...")
     amount = st.number_input("3. ยอดโอน (ต้องเต็มร้อย ห้ามมีเศษ)", min_value=100, step=100)
-    trans_time = st.time_input("4. เวลาที่โอน (ระบุตามสลิป)")
+    
+    # ช่องเวลาจะเปลี่ยน auto ถ้า AI อ่านเจอ
+    trans_time = st.time_input("4. เวลาที่โอน (อ่านจากสลิปอัตโนมัติ)", value=default_time)
     
     submitted = st.form_submit_button("✅ ยืนยันการแจ้งโอน")
 
@@ -105,7 +156,6 @@ with st.form("slip_form"):
                     client = get_google_sheet_client()
                     sheet = client.open_by_key(SHEET_ID)
                     
-                    # 1. บันทึก Log
                     try:
                         log_ws = sheet.worksheet("Transaction_Logs")
                     except:
@@ -113,35 +163,24 @@ with st.form("slip_form"):
                         log_ws.append_row(["Timestamp", "ผู้โอน", "ยอดเงิน", "เวลาโอน", "สถานะ"])
                     
                     months_got = int(amount / 100)
+                    member_ws = sheet.worksheet("Sheet1")
                     
-                    # 2. ค้นหาและอัปเดตสมาชิก
-                    member_ws = sheet.worksheet("Sheet1") # แก้ชื่อ Sheet รายชื่อสมาชิกให้ตรง
                     try:
-                        # ค้นหาชื่อใน Column G (Col 7)
                         cell = member_ws.find(sender_name, in_column=7)
-                        
                         if cell:
-                            # ดึงสิทธิ์เดิม (Col E = 5)
                             current_perm = member_ws.cell(cell.row, 5).value
                             new_perm = calculate_next_permission(current_perm, amount)
-                            
-                            # อัปเดตสิทธิ์ใหม่
                             member_ws.update_cell(cell.row, 5, new_perm)
                             
-                            # บันทึก Log ว่าสำเร็จ
                             log_ws.append_row([str(datetime.now()), sender_name, amount, str(trans_time), f"Success: +{months_got} months"])
                             
                             st.success(f"🎉 เรียบร้อย! คุณ {sender_name} ได้รับสิทธิ์เพิ่ม {months_got} เดือน")
                             st.write(f"**สิทธิ์ใหม่ของคุณคือ:** `{new_perm}`")
                             st.balloons()
                         else:
-                            # ไม่เจอชื่อ
                             log_ws.append_row([str(datetime.now()), sender_name, amount, str(trans_time), "Error: Name Not Found"])
                             st.warning(f"⚠️ บันทึกข้อมูลแล้ว แต่ไม่พบชื่อ '{sender_name}' ในระบบ (สิทธิ์ยังไม่อัปเดต) กรุณาติดต่อแอดมิน")
-                            
                     except Exception as e:
                         st.error(f"เกิดข้อผิดพลาดในการค้นหา: {e}")
-
             except Exception as e:
-
                 st.error(f"ระบบขัดข้อง: {e}")
